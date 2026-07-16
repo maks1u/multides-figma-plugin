@@ -1,0 +1,29 @@
+{
+  "name": "MultiDes",
+  "id": "1646195545147758648",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": [
+    "figma"
+  ],
+  "documentAccess": "dynamic-page",
+  "relaunchButtons": [
+    {
+      "command": "open",
+      "name": "Open MultiDes",
+      "multipleSelection": true
+    }
+  ],
+  "networkAccess": {
+    "allowedDomains": [
+      "https://fonts.googleapis.com",
+      "https://fonts.gstatic.com"
+    ],
+    "devAllowedDomains": [
+      "https://fonts.googleapis.com",
+      "https://fonts.gstatic.com"
+    ],
+    "reasoning": "The plugin UI loads IBM Plex Mono and Space Grotesk fonts from Google Fonts for typography. No user data is sent to these domains."
+  }
+}
