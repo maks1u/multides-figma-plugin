@@ -1525,6 +1525,25 @@
       gap: 10px;
       padding: 30px 0;
     }
+    /* ── PRINT ── */
+    .print-tabs { display: flex; gap: 8px; padding: 14px; border-bottom: 1px solid var(--border); }
+    .print-tabs button { flex: 1; }
+    .print-tabs button[aria-selected="true"] { background: var(--fg); color: var(--bg); }
+    .print-panel { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 14px; }
+    .print-panel[hidden] { display: none; }
+    .print-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0; }
+    .print-field { display: flex; flex-direction: column; gap: 7px; font: 10px var(--mono); }
+    .print-field input, .print-field select {
+      width: 100%; min-width: 0; height: 34px; padding: 0 8px;
+      background: var(--s1); color: var(--fg); border: 1px solid var(--border); font: 11px var(--mono);
+    }
+    .print-field input:focus, .print-field select:focus { outline: 1px solid var(--fg); }
+    .print-note { color: #999; font-size: 11px; line-height: 1.6; margin: 12px 0; }
+    .print-summary { padding: 12px; background: var(--s1); border: 1px solid var(--border); font: 11px/1.7 var(--mono); }
+    .print-status { min-height: 36px; margin: 12px 0; font: 11px/1.6 var(--mono); overflow-wrap: anywhere; }
+    .print-selection { max-height: 105px; overflow-y: auto; white-space: pre-line; overflow-wrap: anywhere; }
+    .print-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .print-actions [hidden] { display: none; }
   </style>
 </head>
 <body>
@@ -1605,6 +1624,15 @@
           </div>
           <div class="tool-arrow">→</div>
         </div>
+
+        <button class="tool-card" id="card-print" type="button" style="text-align: left; font: inherit; color: inherit;">
+          <span class="tool-icon" aria-hidden="true">▤</span>
+          <span class="tool-info">
+            <span class="tool-name" style="display: block;">Print</span>
+            <span class="tool-desc" style="display: block;">Create frames in cm, mm, or inches · Export RGB / CMYK PDFs</span>
+          </span>
+          <span class="tool-arrow" aria-hidden="true">→</span>
+        </button>
 
         <div class="tool-card locked">
           <div class="tool-icon">≋</div>
@@ -1989,6 +2017,46 @@
       </div>
     </div>
 
+    <!-- PRINT -->
+    <div class="screen" id="print">
+      <div class="print-tabs" role="tablist" aria-label="Print tools">
+        <button class="btn" id="print-tab-frame" role="tab" aria-selected="true" aria-controls="print-frame-panel">CREATE FRAME</button>
+        <button class="btn" id="print-tab-pdf" role="tab" aria-selected="false" aria-controls="print-pdf-panel" tabindex="-1">EXPORT PDF</button>
+      </div>
+      <div class="print-panel" id="print-frame-panel" role="tabpanel" aria-labelledby="print-tab-frame">
+        <div class="sec-label">Physical dimensions</div>
+        <div class="print-fields">
+          <label class="print-field">Width<input id="print-width" type="number" min="0.001" step="any" value="7" required></label>
+          <label class="print-field">Height<input id="print-height" type="number" min="0.001" step="any" value="7" required></label>
+          <label class="print-field">Unit<select id="print-unit"><option value="cm">Centimeters (cm)</option><option value="mm">Millimeters (mm)</option><option value="in">Inches (in)</option></select></label>
+        </div>
+        <div class="print-summary" id="print-dimensions" aria-live="polite"></div>
+        <p class="print-note">Print sizing uses 72 Figma px per inch. Fractional pixels keep the physical size accurate. PDF export DPI controls image detail, not frame size.</p>
+        <button class="btn btn-primary" id="print-create">CREATE FRAME</button>
+        <div class="print-status" id="print-frame-status" role="status"></div>
+      </div>
+      <div class="print-panel" id="print-pdf-panel" role="tabpanel" aria-labelledby="print-tab-pdf" hidden>
+        <div class="sec-label">Selected frames → PDF</div>
+        <p class="print-note">Select frames in Figma. Each selected frame becomes one page, in selection order, at its original physical size.</p>
+        <div class="print-summary print-selection" id="print-selection" aria-live="polite">Select one or more frames.</div>
+        <div class="print-fields" id="print-export-fields">
+          <label class="print-field">Color mode<select id="print-color-mode"><option value="RGB">RGB (sRGB source)</option><option value="CMYK">CMYK (generic conversion)</option></select></label>
+          <label class="print-field">Raster resolution<select id="print-dpi"><option value="72">72 DPI</option><option value="150">150 DPI</option><option value="300" selected>300 DPI</option><option value="600">600 DPI</option></select></label>
+          <label class="print-field" style="grid-column: 1 / -1;">File name<input id="print-filename" value="multides-print.pdf" maxlength="120"></label>
+        </div>
+        <p class="print-note" id="print-color-note">Both modes rasterize artwork at the selected DPI and flatten transparency onto white. Text and vectors become pixels.</p>
+        <p class="print-note" id="print-cmyk-note" hidden>CMYK uses a generic mathematical conversion without an ICC profile. Colors can shift on press; this is not a PDF/X or a printer-profile proof.</p>
+        <div class="print-actions">
+          <button class="btn btn-primary" id="print-prepare" disabled>PREPARE PDF</button>
+          <button class="btn" id="print-cancel" hidden>CANCEL</button>
+          <button class="btn btn-primary" id="print-save" hidden>SAVE PDF…</button>
+          <button class="btn" id="print-download" hidden>DOWNLOAD PDF</button>
+        </div>
+        <div class="print-status" id="print-export-status" role="status"></div>
+        <p class="print-note">Save PDF opens a folder/file chooser when the host allows it. Otherwise use Download PDF; your browser or Figma controls the destination. Conversion runs locally.</p>
+      </div>
+    </div>
+
     <!-- TOKEN PICKER OVERLAY -->
     <div class="overlay" id="token-overlay">
       <div class="overlay-header">
@@ -2039,6 +2107,8 @@ function goTo(id) {
     breadcrumb.innerHTML = 'Font Replacer';
   } else if (id === 'typescales') {
     breadcrumb.innerHTML = 'Typescales';
+  } else if (id === 'print') {
+    breadcrumb.textContent = 'Print';
   } else {
     breadcrumb.innerHTML = 'Variable Export';
   }
@@ -3891,6 +3961,304 @@ window.onmessage = function(e) {
   if (oldOnMessage) oldOnMessage(e);
 };
 
+</script>
+<script id="print-pdf-core">
+// Small image-only PDF writer; no remote conversion service or runtime dependencies.
+var PrintPDF = (function() {
+  var encoder = new TextEncoder();
+
+  function pixels(rgba, mode) {
+    if (!['RGB', 'CMYK'].includes(mode) || rgba.length % 4 !== 0) throw new Error('Invalid pixel data.');
+    var channels = mode === 'CMYK' ? 4 : 3;
+    var result = new Uint8Array(rgba.length / 4 * channels);
+    for (var i = 0, j = 0; i < rgba.length; i += 4) {
+      var alpha = rgba[i + 3] / 255;
+      var r = 255 + (rgba[i] - 255) * alpha;
+      var g = 255 + (rgba[i + 1] - 255) * alpha;
+      var b = 255 + (rgba[i + 2] - 255) * alpha;
+      if (mode === 'CMYK') {
+        // shortcut: generic CMYK, not ICC-managed; use a printer profile engine for press proofs.
+        var max = Math.max(r, g, b);
+        result[j++] = max === 0 ? 0 : Math.round((max - r) * 255 / max);
+        result[j++] = max === 0 ? 0 : Math.round((max - g) * 255 / max);
+        result[j++] = max === 0 ? 0 : Math.round((max - b) * 255 / max);
+        result[j++] = Math.round(255 - max);
+      } else {
+        result[j++] = Math.round(r);
+        result[j++] = Math.round(g);
+        result[j++] = Math.round(b);
+      }
+    }
+    return result;
+  }
+
+  function Writer(count, mode) {
+    if (!Number.isInteger(count) || count < 1 || count > 50 || !['RGB', 'CMYK'].includes(mode)) {
+      throw new Error('Invalid PDF settings.');
+    }
+    this.count = count;
+    this.mode = mode;
+    this.index = 0;
+    this.parts = [];
+    this.offsets = [0];
+    this.length = 0;
+    this.append('%PDF-1.4\n');
+    this.append(new Uint8Array([37, 226, 227, 207, 211, 10]));
+    this.object(1, '<< /Type /Catalog /Pages 2 0 R >>');
+    var kids = [];
+    for (var i = 0; i < count; i++) kids.push((3 + i * 3) + ' 0 R');
+    this.object(2, '<< /Type /Pages /Count ' + count + ' /Kids [' + kids.join(' ') + '] >>');
+  }
+
+  Writer.prototype.append = function(value) {
+    var bytes = typeof value === 'string' ? encoder.encode(value) : value;
+    this.parts.push(bytes);
+    this.length += bytes.length;
+  };
+  Writer.prototype.object = function(id, dictionary, data) {
+    this.offsets[id] = this.length;
+    this.append(id + ' 0 obj\n' + dictionary);
+    if (data) {
+      this.append('\nstream\n');
+      this.append(data);
+      this.append('\nendstream');
+    }
+    this.append('\nendobj\n');
+  };
+  Writer.prototype.addPage = async function(width, height, imageWidth, imageHeight, rgba) {
+    if (this.index >= this.count || !Number.isFinite(width) || !Number.isFinite(height) ||
+        width < 0.01 || height < 0.01 || width > 14400 || height > 14400 ||
+        !Number.isInteger(imageWidth) || !Number.isInteger(imageHeight) ||
+        imageWidth < 1 || imageHeight < 1 || imageWidth > 8192 || imageHeight > 8192 ||
+        imageWidth * imageHeight > 16000000 || rgba.length !== imageWidth * imageHeight * 4) {
+      throw new Error('Invalid PDF page dimensions or raster data.');
+    }
+    var data = pixels(rgba, this.mode);
+    var filter = '';
+    if (typeof CompressionStream !== 'undefined') {
+      data = new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
+      filter = ' /Filter /FlateDecode';
+    }
+    var id = 3 + this.index * 3;
+    var w = width.toFixed(6), h = height.toFixed(6);
+    this.object(id, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + w + ' ' + h +
+      '] /Resources << /XObject << /Im0 ' + (id + 2) + ' 0 R >> >> /Contents ' + (id + 1) + ' 0 R >>');
+    var content = encoder.encode('q\n' + w + ' 0 0 ' + h + ' 0 0 cm\n/Im0 Do\nQ\n');
+    this.object(id + 1, '<< /Length ' + content.length + ' >>', content);
+    this.object(id + 2, '<< /Type /XObject /Subtype /Image /Width ' + imageWidth + ' /Height ' + imageHeight +
+      ' /ColorSpace /Device' + this.mode + ' /BitsPerComponent 8 /Length ' + data.length + filter + ' >>', data);
+    this.index++;
+  };
+  Writer.prototype.finish = function() {
+    if (this.index !== this.count) throw new Error('PDF is incomplete.');
+    var xref = this.length;
+    this.append('xref\n0 ' + this.offsets.length + '\n0000000000 65535 f \n');
+    for (var i = 1; i < this.offsets.length; i++) {
+      this.append(String(this.offsets[i]).padStart(10, '0') + ' 00000 n \n');
+    }
+    this.append('trailer\n<< /Size ' + this.offsets.length + ' /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF\n');
+    return new Blob(this.parts, { type: 'application/pdf' });
+  };
+  return { Writer: Writer, pixels: pixels };
+})();
+</script>
+<script id="print-ui">
+(function() {
+  var job = null;
+  var requestId = 0;
+  var pdf = null;
+  var pdfName = '';
+  var selectionValid = false;
+  var saving = false;
+  var byId = function(id) { return document.getElementById(id); };
+  var send = function(message) { parent.postMessage({ pluginMessage: message }, '*'); };
+  var status = function(message) { byId('print-export-status').textContent = message; };
+
+  function updateControls() {
+    byId('print-prepare').disabled = !selectionValid || !!job || saving;
+    byId('print-cancel').hidden = !job;
+    byId('print-save').hidden = !pdf;
+    byId('print-save').disabled = saving;
+    byId('print-download').hidden = !pdf;
+    byId('print-download').disabled = saving;
+    byId('print-export-fields').querySelectorAll('input, select').forEach(function(el) { el.disabled = !!job || saving; });
+  }
+  function dimensions() {
+    var perInch = { cm: 2.54, mm: 25.4, in: 1 }[byId('print-unit').value];
+    var width = Number(byId('print-width').value) / perInch * 72;
+    var height = Number(byId('print-height').value) / perInch * 72;
+    var valid = Number.isFinite(width) && Number.isFinite(height) && width >= 0.01 && height >= 0.01 && width <= 14400 && height <= 14400;
+    byId('print-dimensions').textContent = valid ? width.toFixed(3) + ' × ' + height.toFixed(3) + ' Figma px\n(72 px = 1 inch)' : 'Enter positive dimensions, up to 200 inches per side.';
+    byId('print-create').disabled = !valid;
+    return valid;
+  }
+  function tab(name) {
+    ['frame', 'pdf'].forEach(function(id) {
+      byId('print-tab-' + id).setAttribute('aria-selected', String(id === name));
+      byId('print-tab-' + id).tabIndex = id === name ? 0 : -1;
+      byId('print-' + id + '-panel').hidden = id !== name;
+    });
+    if (name === 'pdf') send({ type: 'GET_PRINT_SELECTION' });
+  }
+  ['frame', 'pdf'].forEach(function(name) {
+    byId('print-tab-' + name).addEventListener('click', function() { tab(name); });
+    byId('print-tab-' + name).addEventListener('keydown', function(e) {
+      if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
+        e.preventDefault();
+        var next = e.key === 'Home' ? 'frame' : e.key === 'End' ? 'pdf' : name === 'frame' ? 'pdf' : 'frame';
+        tab(next);
+        byId('print-tab-' + next).focus();
+      }
+    });
+  });
+  byId('card-print').addEventListener('click', function() { goTo('print'); send({ type: 'GET_PRINT_SELECTION' }); });
+  ['print-width', 'print-height', 'print-unit'].forEach(function(id) { byId(id).addEventListener('input', dimensions); });
+  byId('print-create').addEventListener('click', function() {
+    if (!dimensions()) return;
+    byId('print-create').disabled = true;
+    byId('print-frame-status').textContent = 'Creating frame…';
+    send({ type: 'PRINT_CREATE_FRAME', width: Number(byId('print-width').value), height: Number(byId('print-height').value), unit: byId('print-unit').value });
+  });
+  byId('print-color-mode').addEventListener('change', function() {
+    byId('print-cmyk-note').hidden = this.value !== 'CMYK';
+  });
+  byId('print-export-fields').addEventListener('input', function() {
+    if (pdf) {
+      pdf = null;
+      status('Settings changed. Prepare the PDF again.');
+      updateControls();
+    }
+  });
+  function filename() {
+    var name = byId('print-filename').value.trim().replace(/[<>:"/\\|?*\x00-\x1f]/g, '-').replace(/\.pdf$/i, '').replace(/[. ]+$/g, '').slice(0, 110);
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) name = 'print-' + name;
+    return (name || 'multides-print') + '.pdf';
+  }
+  function fail(error) {
+    if (job) send({ type: 'PRINT_EXPORT_CANCEL', requestId: job.id });
+    job = null;
+    status('Export failed: ' + error);
+    updateControls();
+  }
+  byId('print-prepare').addEventListener('click', function() {
+    if (job || saving || !selectionValid) return;
+    pdf = null;
+    job = { id: ++requestId, mode: byId('print-color-mode').value, name: filename(), count: 0, index: 0, writer: null };
+    updateControls();
+    status('Preparing selected frames…');
+    send({ type: 'PRINT_EXPORT_START', requestId: job.id, colorMode: job.mode, dpi: Number(byId('print-dpi').value) });
+  });
+  byId('print-cancel').addEventListener('click', function() {
+    if (job) send({ type: 'PRINT_EXPORT_CANCEL', requestId: job.id });
+    job = null;
+    status('Export cancelled.');
+    updateControls();
+  });
+  async function addPage(msg, active) {
+    var url = URL.createObjectURL(new Blob([new Uint8Array(msg.bytes)], { type: 'image/png' }));
+    var canvas;
+    try {
+      var image = new Image();
+      await new Promise(function(resolve, reject) {
+        image.onload = resolve;
+        image.onerror = function() { reject(new Error('Could not decode the exported frame.')); };
+        image.src = url;
+      });
+      if (job !== active) return;
+      var w = image.naturalWidth, h = image.naturalHeight;
+      if (!w || !h || w > 8192 || h > 8192 || w * h > 16000000) throw new Error('Raster exceeds export limits. Lower the DPI.');
+      canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      var context = canvas.getContext('2d', { colorSpace: 'srgb' });
+      if (!context) throw new Error('Canvas is unavailable in this host.');
+      context.drawImage(image, 0, 0);
+      await active.writer.addPage(msg.width, msg.height, w, h, context.getImageData(0, 0, w, h).data);
+    } finally {
+      URL.revokeObjectURL(url);
+      if (canvas) { canvas.width = 0; canvas.height = 0; }
+    }
+  }
+  window.addEventListener('message', async function(e) {
+    var msg = e.data && e.data.pluginMessage;
+    if (!msg) return;
+    if (msg.type === 'PRINT_SELECTION') {
+      selectionValid = msg.nodes.length > 0 && msg.nodes.length <= 50 && msg.nodes.every(function(n) { return n.isFrame; });
+      byId('print-selection').textContent = msg.nodes.length ? msg.nodes.map(function(n, i) {
+        return (i + 1) + '. ' + n.name + (n.isFrame ? ' · ' + (n.width * 25.4 / 72).toFixed(2) + ' × ' + (n.height * 25.4 / 72).toFixed(2) + ' mm' : ' · Select a frame instead');
+      }).join('\n') : 'Select one or more frames.';
+      updateControls();
+    } else if (msg.type === 'PRINT_FRAME_CREATED') {
+      dimensions();
+      byId('print-frame-status').textContent = 'Created ' + msg.width.toFixed(3) + ' × ' + msg.height.toFixed(3) + ' px frame.';
+    } else if (msg.type === 'PRINT_ERROR') {
+      if (msg.action === 'PRINT_CREATE_FRAME') {
+        dimensions();
+        byId('print-frame-status').textContent = msg.message;
+      } else if (job && msg.requestId === job.id) fail(msg.message);
+    } else if (job && msg.requestId === job.id) {
+      var active = job;
+      try {
+        if (msg.type === 'PRINT_EXPORT_READY') {
+          active.count = msg.count;
+          active.writer = new PrintPDF.Writer(msg.count, active.mode);
+          status('Rendering page 1 of ' + active.count + '…');
+          send({ type: 'PRINT_EXPORT_NEXT', requestId: active.id });
+        } else if (msg.type === 'PRINT_EXPORT_PAGE') {
+          if (msg.index !== active.index) throw new Error('PDF page order mismatch.');
+          status('Converting page ' + (msg.index + 1) + ' of ' + active.count + ': ' + msg.name);
+          await addPage(msg, active);
+          if (job !== active) return;
+          active.index++;
+          if (active.index === active.count) {
+            pdf = active.writer.finish();
+            pdfName = active.name;
+            job = null;
+            status(active.count + ' page(s) ready · ' + active.mode + ' · ' + (pdf.size / 1048576).toFixed(2) + ' MB. Save PDF to choose a destination.');
+            updateControls();
+          } else {
+            status('Rendering page ' + (active.index + 1) + ' of ' + active.count + '…');
+            send({ type: 'PRINT_EXPORT_NEXT', requestId: active.id });
+          }
+        }
+      } catch (err) { if (job === active) fail(err.message); }
+    }
+  });
+  byId('print-save').addEventListener('click', async function() {
+    if (!pdf || saving) return;
+    if (typeof window.showSaveFilePicker !== 'function') {
+      status('Folder selection is unavailable here. Use Download PDF; the host controls its destination.');
+      return;
+    }
+    saving = true;
+    updateControls();
+    var writable;
+    try {
+      var handle = await window.showSaveFilePicker({ id: 'multides-print', suggestedName: pdfName, types: [{ description: 'PDF document', accept: { 'application/pdf': ['.pdf'] } }] });
+      writable = await handle.createWritable();
+      await writable.write(pdf);
+      await writable.close();
+      writable = null;
+      status('PDF saved: ' + handle.name);
+    } catch (err) {
+      if (writable) { try { await writable.abort(); } catch (_) {} }
+      status(err.name === 'AbortError' ? 'Save cancelled. Your PDF is still ready.' : 'Could not save: ' + err.message + '. You can use Download PDF.');
+    } finally { saving = false; updateControls(); }
+  });
+  byId('print-download').addEventListener('click', function() {
+    if (!pdf || saving) return;
+    var url = URL.createObjectURL(pdf);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = pdfName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(function() { URL.revokeObjectURL(url); }, 60000);
+    status('PDF download requested. Check the destination chosen by your browser or Figma.');
+  });
+  dimensions();
+})();
 </script>
 </body>
 </html>

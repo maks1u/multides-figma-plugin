@@ -5,3 +5,8 @@ node_modules
 
 out/
 dist/
+
+# Local browser and PDF verification artifacts
+/.playwright-cli/
+/output/playwright/
+/tmp/pdfs/

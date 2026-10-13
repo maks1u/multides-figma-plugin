@@ -4,10 +4,11 @@
   "description": "Your Figma Plugin",
   "main": "code.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "test": "node --test tests/*.test.mjs",
+    "build": "node scripts/check.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "watch": "npm run build -- --watch"
+    "watch": "node --watch-path=code.js --watch-path=ui.html scripts/check.mjs"
   },
   "author": "",
   "license": "",
