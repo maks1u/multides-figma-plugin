@@ -45,14 +45,15 @@ Easily find where specific variables are used across your Figma file.
 
 ### 7. Print
 - **Create Frame**: Enter width and height in centimeters, millimeters, or inches. The conversion uses **72 Figma units per inch**, matching PDF points, rather than the 96 px/in used for CSS. A **7 × 7 cm** frame is **198.42519685 × 198.42519685 px**; fractional dimensions are preserved. Print at **100% / actual size**, rather than fitting to paper.
-- **Export PDF**: Select one or more frames, choose **RGB** or **CMYK**, raster resolution (72, 150, 300, or 600 DPI), and a file name. Click **Prepare PDF**, then **Save PDF** to choose the destination where the host supports the system file picker. **Download PDF** uses the browser/Figma download destination when that picker is unavailable or blocked.
-- **Physical size stays fixed** when changing DPI. Each selected frame becomes a page in selection order. A 7 cm frame is approximately 827 raster pixels wide at 300 DPI while its PDF page remains exactly 7 cm wide.
-- Both modes **rasterize text and vectors** and flatten transparency onto white. Source artwork is exported as sRGB; CMYK embeds actual four-channel **DeviceCMYK** pixels using generic mathematical conversion. It has **no ICC output profile, PDF/X conformance, bleed, or crop marks**. For press-critical color, convert with the printer's ICC profile in a color-managed prepress tool.
-- Conversion runs **locally**, without uploading artwork or modifying the original frames. Limits: 50 frames, 16 million raster pixels per page, 40 million per export, 8192 raster pixels per side, and 200 inches per PDF side. Reduce DPI or split the selection if needed. Rotated/scaled frames or parents must be reset before exporting. Selection is captured when preparation starts; avoid editing artwork until it finishes. Cancellation discards partial output.
+- **Export PDF**: Select one or more frames and a file name. Click **Prepare PDF**, then **Save PDF** to choose the destination where the host supports the system file picker. **Download PDF** uses the browser/Figma download destination when that picker is unavailable or blocked.
+- **Vector output**: Each frame uses Figma's native PDF export in sRGB. The plugin copies the PDF pages into one document with bundled [pdf-lib](https://pdf-lib.js.org/docs/api/classes/pdfdocument#copypages), preserving vector paths, text/glyphs, fonts, and transparency from Figma's export instead of converting whole pages into images. Photos and effects rasterized by Figma remain raster; text editability follows Figma's exporter.
+- **Exact physical size**: Each selected frame becomes a page in selection order, using 72 PDF points per inch. Fractional page bounds are preserved, so a 7 cm frame produces a 7 cm PDF page. Vector output has no DPI setting or raster pixel limits.
+- **Print color**: The previous raster CMYK conversion is removed. Figma's PDF API supports RGB profiles, not CMYK. For CMYK or PDF/X delivery, convert the vector PDF with the printer's ICC profile in a color-managed prepress tool. The plugin does not add bleed or crop marks.
+- Export runs **locally**, without uploading artwork or modifying the original frames. Limits: 50 frames and 200 inches per PDF side. Rotated/scaled frames or parents must be reset before exporting. Selection is captured when preparation starts; avoid editing artwork until it finishes. Cancellation discards partial output.
 
 Sizing and export behavior follow [Figma's export settings](https://help.figma.com/hc/en-us/articles/13402894554519-Export-formats-and-settings-for-static-designs) and [Plugin API export capabilities](https://developers.figma.com/docs/plugins/api/ExportSettings/).
 
-Run `npm test` for conversion, PDF structure, and mocked Figma export checks. The implementation lives directly in `code.js` and `ui.html`; `npm run build` validates their JavaScript without generating or overwriting files, and `npm run watch` repeats validation when either file changes.
+Run `npm install` and `npm run build` to refresh the embedded pdf-lib bundle in `ui.html` and validate the plugin JavaScript. Run `npm test` for physical sizing, preserved vector/text content, multipage PDF structure, and mocked Figma export/UI checks. The implementation lives directly in `code.js` and `ui.html`; `npm run watch` repeats bundling and validation when either file changes. The checked-in UI remains self-contained for Figma; no CDN access is needed for PDF export.
 
 
 ## 📂 File Architecture
@@ -61,7 +62,7 @@ Run `npm test` for conversion, PDF structure, and mocked Figma export checks. Th
 |------|-------------|
 | `manifest.json` | Plugin manifest metadata |
 | `code.js` | Figma sandbox backend — variables collector, layer analysis, canvas manipulation |
-| `ui.html` | Self-contained plugin UI (HTML/CSS/JS, no external dependencies) |
+| `ui.html` | Self-contained plugin UI with embedded pdf-lib for vector PDF page merging |
 
 ---
 

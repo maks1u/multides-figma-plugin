@@ -351,7 +351,6 @@ function buildJsonStructure(selectedData) {
 
 // Print dimensions use PDF points: one Figma unit is 1/72 inch.
 const PRINT_UNITS_PER_INCH = 72;
-const PRINT_MAX_PIXELS = 16000000;
 let printExportJob = null;
 
 function printDimension(value, unit) {
@@ -376,8 +375,9 @@ function sendPrintSelection() {
   });
 }
 
-function printPageSize(node, dpi) {
-  if (node.removed || node.type !== 'FRAME' || node.width < 0.01 || node.height < 0.01) {
+function validatePrintPage(node) {
+  if (node.removed || node.type !== 'FRAME' || !Number.isFinite(node.width) ||
+      !Number.isFinite(node.height) || node.width < 0.01 || node.height < 0.01) {
     throw new Error('Select one or more frames to export.');
   }
   if (node.width > 14400 || node.height > 14400) {
@@ -388,12 +388,6 @@ function printPageSize(node, dpi) {
       Math.abs(t[0][1]) > 0.0001 || Math.abs(t[1][0]) > 0.0001) {
     throw new Error('Reset frame and parent rotation or scaling before exporting.');
   }
-  const width = Math.ceil(node.width * dpi / PRINT_UNITS_PER_INCH);
-  const height = Math.ceil(node.height * dpi / PRINT_UNITS_PER_INCH);
-  if (width > 8192 || height > 8192 || width * height > PRINT_MAX_PIXELS) {
-    throw new Error('This frame is too large at this DPI. Lower the DPI or split the artwork.');
-  }
-  return { width, height };
 }
 
 async function handlePrintMessage(msg) {
@@ -415,31 +409,26 @@ async function handlePrintMessage(msg) {
       sendPrintSelection();
     } else if (msg.type === 'PRINT_EXPORT_START') {
       if (printExportJob) throw new Error('A PDF export is already in progress.');
-      if (![72, 150, 300, 600].includes(msg.dpi) || !['RGB', 'CMYK'].includes(msg.colorMode) ||
-          !Number.isSafeInteger(msg.requestId) || msg.requestId < 1) throw new Error('Invalid PDF export settings.');
+      if (!Number.isSafeInteger(msg.requestId) || msg.requestId < 1) throw new Error('Invalid PDF export settings.');
       const nodes = Array.from(figma.currentPage.selection);
       if (!nodes.length || nodes.length > 50) throw new Error('Select between 1 and 50 frames.');
-      let pixels = 0;
       const pages = nodes.map(node => {
-        const size = printPageSize(node, msg.dpi);
-        pixels += size.width * size.height;
+        validatePrintPage(node);
         return { node, width: node.width, height: node.height, name: node.name };
       });
-      if (pixels > 40000000) throw new Error('Selection is too large. Lower the DPI or export fewer frames.');
-      printExportJob = { requestId: msg.requestId, dpi: msg.dpi, pages, index: 0, busy: false };
+      printExportJob = { requestId: msg.requestId, pages, index: 0, busy: false };
       figma.ui.postMessage({ type: 'PRINT_EXPORT_READY', requestId: msg.requestId, count: pages.length });
     } else if (msg.type === 'PRINT_EXPORT_NEXT') {
       const job = printExportJob;
       if (!job || job.requestId !== msg.requestId || job.busy) return;
       job.busy = true;
       const page = job.pages[job.index];
-      printPageSize(page.node, job.dpi);
+      validatePrintPage(page.node);
       if (page.node.width !== page.width || page.node.height !== page.height) {
         throw new Error('A frame was resized during export. Prepare the PDF again.');
       }
       const bytes = await page.node.exportAsync({
-        format: 'PNG', colorProfile: 'SRGB', contentsOnly: true,
-        useAbsoluteBounds: true, constraint: { type: 'SCALE', value: job.dpi / PRINT_UNITS_PER_INCH },
+        format: 'PDF', colorProfile: 'SRGB', contentsOnly: true, useAbsoluteBounds: true,
       });
       if (printExportJob !== job) return;
       figma.ui.postMessage({
