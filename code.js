@@ -471,12 +471,28 @@ async function handlePrintMessage(msg) {
     if (msg.type === 'GET_PRINT_SELECTION') {
       sendPrintSelection();
     } else if (msg.type === 'PRINT_CREATE_FRAME') {
-      const width = printDimension(msg.width, msg.unit);
-      const height = printDimension(msg.height, msg.unit);
+      const bleedMm = msg.bleedMm === undefined ? 0 : msg.bleedMm;
+      if (![0, 2, 3, 4, 5, 6].includes(bleedMm)) {
+        throw new Error('Choose no bleed or 2, 3, 4, 5, or 6 mm per side.');
+      }
+      const bleed = bleedMm / 25.4 * PRINT_UNITS_PER_INCH;
+      const width = printDimension(msg.width, msg.unit) + bleed * 2;
+      const height = printDimension(msg.height, msg.unit) + bleed * 2;
+      if (width > 14400 || height > 14400) {
+        throw new Error('Frame dimensions including bleed cannot exceed 200 inches per side.');
+      }
       const frame = figma.createFrame();
       frame.resize(width, height);
-      frame.name = `Print ${msg.width} × ${msg.height} ${msg.unit}`;
+      frame.name = `Print ${msg.width} × ${msg.height} ${msg.unit}` + (bleedMm ? ` · Bleed ${bleedMm} mm` : '');
       frame.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }];
+      if (bleedMm) {
+        frame.guides = [
+          { axis: 'X', offset: bleed },
+          { axis: 'X', offset: width - bleed },
+          { axis: 'Y', offset: bleed },
+          { axis: 'Y', offset: height - bleed },
+        ];
+      }
       frame.x = figma.viewport.center.x - width / 2;
       frame.y = figma.viewport.center.y - height / 2;
       figma.currentPage.selection = [frame];

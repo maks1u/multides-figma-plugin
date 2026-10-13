@@ -28,7 +28,7 @@ function mockFigma(selection = []) {
     viewport: { center: { x: 100, y: 200 }, scrollAndZoomIntoView() {} },
     on(event, callback) { listeners[event] = callback; },
     createFrame() {
-      const node = { resize(width, height) { this.width = width; this.height = height; } };
+      const node = { guides: [], resize(width, height) { this.width = width; this.height = height; } };
       created.push(node);
       return node;
     },
@@ -52,6 +52,7 @@ test('cm, mm and inch inputs preserve exact print dimensions', async () => {
     assert.equal(m.created.length, 1);
     assert.ok(Math.abs(m.created[0].width - expected) < 1e-10);
     assert.equal(m.created[0].height, m.created[0].width);
+    assert.equal(m.created[0].guides.length, 0);
     assert.equal(m.figma.currentPage.selection[0], m.created[0]);
     assert.ok(Math.abs(m.created[0].x - (100 - expected / 2)) < 1e-10);
   }
@@ -60,6 +61,45 @@ test('cm, mm and inch inputs preserve exact print dimensions', async () => {
 test('invalid dimensions never create a frame', async () => {
   for (const data of [{ width: 0 }, { width: -1 }, { width: NaN }, { width: Infinity },
     { width: '7' }, { unit: 'px' }, { unit: 'toString' }, { width: 201, unit: 'in' }, { height: 0.000001 }]) {
+    const m = mockFigma();
+    await m.send({ type: 'PRINT_CREATE_FRAME', width: 7, height: 7, unit: 'cm', ...data });
+    assert.equal(m.created.length, 0);
+    assert.equal(m.messages.at(-1).type, 'PRINT_ERROR');
+  }
+});
+
+test('every bleed option adds bleed on all sides and four trim guides in every unit', async () => {
+  for (const bleedMm of [2, 3, 4, 5, 6]) {
+    for (const [unit, width, height, mmPerUnit] of [['cm', 7, 10, 10], ['mm', 70, 100, 1], ['in', 2, 3, 25.4]]) {
+      const m = mockFigma();
+      await m.send({ type: 'PRINT_CREATE_FRAME', width, height, unit, bleedMm });
+      assert.equal(m.created.length, 1);
+      const node = m.created[0];
+      const bleed = bleedMm / 25.4 * 72;
+      const trimWidth = width * mmPerUnit / 25.4 * 72;
+      const trimHeight = height * mmPerUnit / 25.4 * 72;
+      assert.ok(Math.abs(node.width - (trimWidth + bleed * 2)) < 1e-10);
+      assert.ok(Math.abs(node.height - (trimHeight + bleed * 2)) < 1e-10);
+      assert.deepEqual(JSON.parse(JSON.stringify(node.guides)), [
+        { axis: 'X', offset: bleed }, { axis: 'X', offset: node.width - bleed },
+        { axis: 'Y', offset: bleed }, { axis: 'Y', offset: node.height - bleed },
+      ]);
+      assert.ok(Math.abs(node.guides[1].offset - node.guides[0].offset - trimWidth) < 1e-10);
+      assert.ok(Math.abs(node.guides[3].offset - node.guides[2].offset - trimHeight) < 1e-10);
+      assert.equal(node.x, 100 - node.width / 2);
+      assert.equal(node.y, 200 - node.height / 2);
+      assert.match(node.name, new RegExp(`Bleed ${bleedMm} mm`));
+      assert.equal(m.messages.find(message => message.type === 'PRINT_FRAME_CREATED').width, node.width);
+    }
+  }
+});
+
+test('invalid bleed and dimensions exceeding the final size limit never create frames', async () => {
+  for (const data of [
+    ...[-1, 1, 2.5, 7, '3', null, NaN, Infinity, true].map(bleedMm => ({ bleedMm })),
+    { width: 200, unit: 'in', bleedMm: 2 }, { height: 200, unit: 'in', bleedMm: 6 },
+    { width: 0, bleedMm: 3 }, { height: 0.000001, bleedMm: 6 },
+  ]) {
     const m = mockFigma();
     await m.send({ type: 'PRINT_CREATE_FRAME', width: 7, height: 7, unit: 'cm', ...data });
     assert.equal(m.created.length, 0);
@@ -430,7 +470,7 @@ function printUI() {
     emit(name) { return this.listeners[name]?.call(this); },
   }]));
   for (const [id, value] of [['print-width', '7'], ['print-height', '7'], ['print-unit', 'cm'],
-    ['print-filename', 'vector.pdf']]) elements.get(id).value = value;
+    ['print-preset', 'custom'], ['print-bleed', '0'], ['print-filename', 'vector.pdf']]) elements.get(id).value = value;
   const messages = [];
   elements.get('print-export-fields').querySelectorAll = () =>
     [elements.get('print-filename'), elements.get('print-outline-text')];
@@ -471,6 +511,74 @@ function printUI() {
   };
   return result;
 }
+
+test('all presets populate the selected unit and retain exact physical sizes when switching units', async () => {
+  const ui = printUI();
+  for (const [preset, widthMm, heightMm] of [
+    ['a1', 594, 841], ['a2', 420, 594], ['a3', 297, 420], ['a4', 210, 297],
+    ['sticker-6', 60, 60], ['sticker-7', 70, 70],
+  ]) {
+    assert.ok(html.includes('value="' + preset + '"'));
+    const picker = ui.elements.get('print-preset');
+    picker.value = preset;
+    picker.emit('change');
+    for (const [unit, mmPerUnit] of [['cm', 10], ['mm', 1], ['in', 25.4]]) {
+      ui.elements.get('print-unit').value = unit;
+      ui.elements.get('print-unit').emit('change');
+      assert.ok(Math.abs(Number(ui.elements.get('print-width').value) * mmPerUnit - widthMm) < 1e-10);
+      assert.ok(Math.abs(Number(ui.elements.get('print-height').value) * mmPerUnit - heightMm) < 1e-10);
+      assert.equal(picker.value, preset);
+      ui.elements.get('print-create').emit('click');
+      const m = mockFigma();
+      await m.send(ui.messages.at(-1));
+      assert.equal(m.created.length, 1);
+      assert.ok(Math.abs(m.created[0].width - widthMm / 25.4 * 72) < 1e-10);
+      assert.ok(Math.abs(m.created[0].height - heightMm / 25.4 * 72) < 1e-10);
+    }
+  }
+  for (const id of ['print-width', 'print-height']) {
+    ui.elements.get('print-preset').value = 'a4';
+    ui.elements.get('print-preset').emit('change');
+    ui.elements.get(id).value = '5';
+    ui.elements.get(id).emit('input');
+    assert.equal(ui.elements.get('print-preset').value, 'custom');
+    assert.equal(ui.elements.get(id).value, '5');
+  }
+});
+
+test('bleed preview, frame creation and size validation use the enlarged dimensions', async () => {
+  const ui = printUI();
+  ui.elements.get('print-preset').value = 'sticker-7';
+  ui.elements.get('print-preset').emit('change');
+  ui.elements.get('print-bleed').value = '3';
+  ui.elements.get('print-bleed').emit('change');
+  assert.match(ui.elements.get('print-dimensions').textContent, /With bleed: 7\.600 × 7\.600 cm/);
+  ui.elements.get('print-create').emit('click');
+  const message = ui.messages.at(-1);
+  assert.equal(message.bleedMm, 3);
+  assert.equal(message.width, 7);
+  const m = mockFigma();
+  await m.send(message);
+  assert.ok(Math.abs(m.created[0].width - 76 / 25.4 * 72) < 1e-10);
+  await ui.receive(m.messages.find(message => message.type === 'PRINT_FRAME_CREATED'));
+  assert.equal(ui.elements.get('print-create').disabled, false);
+  ui.elements.get('print-width').value = '200';
+  ui.elements.get('print-width').emit('input');
+  ui.elements.get('print-unit').value = 'in';
+  ui.elements.get('print-unit').emit('change');
+  assert.equal(ui.elements.get('print-create').disabled, true);
+  const count = ui.messages.length;
+  ui.elements.get('print-create').emit('click');
+  assert.equal(ui.messages.length, count);
+  ui.elements.get('print-bleed').value = '0';
+  ui.elements.get('print-bleed').emit('change');
+  assert.equal(ui.elements.get('print-create').disabled, false);
+  ui.elements.get('print-width').value = '';
+  ui.elements.get('print-width').emit('input');
+  ui.elements.get('print-bleed').value = '6';
+  ui.elements.get('print-bleed').emit('change');
+  assert.equal(ui.elements.get('print-create').disabled, true);
+});
 
 test('print UI prepares native vector PDFs and saves/downloads the same PDF without a canvas', async () => {
   const ui = printUI();

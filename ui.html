@@ -1542,6 +1542,7 @@
     .print-checkbox input { accent-color: var(--fg); }
     .print-note { color: #999; font-size: 11px; line-height: 1.6; margin: 12px 0; }
     .print-summary { padding: 12px; background: var(--s1); border: 1px solid var(--border); font: 11px/1.7 var(--mono); }
+    #print-dimensions { white-space: pre-line; }
     .print-status { min-height: 36px; margin: 12px 0; font: 11px/1.6 var(--mono); overflow-wrap: anywhere; }
     .print-selection { max-height: 105px; overflow-y: auto; white-space: pre-line; overflow-wrap: anywhere; }
     .print-actions { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -2028,11 +2029,29 @@
       <div class="print-panel" id="print-frame-panel" role="tabpanel" aria-labelledby="print-tab-frame">
         <div class="sec-label">Physical dimensions</div>
         <div class="print-fields">
+          <label class="print-field" style="grid-column: 1 / -1;">Preset<select id="print-preset">
+            <option value="custom">Custom size</option>
+            <option value="a1">A1 · 594 × 841 mm</option>
+            <option value="a2">A2 · 420 × 594 mm</option>
+            <option value="a3">A3 · 297 × 420 mm</option>
+            <option value="a4">A4 · 210 × 297 mm</option>
+            <option value="sticker-6">Sticker · 6 × 6 cm</option>
+            <option value="sticker-7">Sticker · 7 × 7 cm</option>
+          </select></label>
           <label class="print-field">Width<input id="print-width" type="number" min="0.001" step="any" value="7" required></label>
           <label class="print-field">Height<input id="print-height" type="number" min="0.001" step="any" value="7" required></label>
           <label class="print-field">Unit<select id="print-unit"><option value="cm">Centimeters (cm)</option><option value="mm">Millimeters (mm)</option><option value="in">Inches (in)</option></select></label>
+          <label class="print-field">Bleed<select id="print-bleed" aria-describedby="print-bleed-note">
+            <option value="0">None</option>
+            <option value="2">2 mm per side</option>
+            <option value="3">3 mm per side</option>
+            <option value="4">4 mm per side</option>
+            <option value="5">5 mm per side</option>
+            <option value="6">6 mm per side</option>
+          </select></label>
         </div>
         <div class="print-summary" id="print-dimensions" aria-live="polite"></div>
+        <p class="print-note" id="print-bleed-note">Width and height are the finished size. Bleed adds space on every side and four trim guides. Show Figma rulers (Shift + R) to see the guides; they do not appear in the PDF.</p>
         <p class="print-note">Print sizing uses 72 Figma px per inch. Fractional pixels keep the physical size accurate. Vector artwork stays sharp at any print size.</p>
         <button class="btn btn-primary" id="print-create">CREATE FRAME</button>
         <div class="print-status" id="print-frame-status" role="status"></div>
@@ -4051,6 +4070,17 @@ var PrintPDF = (function() {
   var byId = function(id) { return document.getElementById(id); };
   var send = function(message) { parent.postMessage({ pluginMessage: message }, '*'); };
   var status = function(message) { byId('print-export-status').textContent = message; };
+  var presets = { a1: [594, 841], a2: [420, 594], a3: [297, 420], a4: [210, 297], 'sticker-6': [60, 60], 'sticker-7': [70, 70] };
+
+  function applyPreset() {
+    var size = presets[byId('print-preset').value];
+    if (size) {
+      var mmPerUnit = { cm: 10, mm: 1, in: 25.4 }[byId('print-unit').value];
+      byId('print-width').value = size[0] / mmPerUnit;
+      byId('print-height').value = size[1] / mmPerUnit;
+    }
+    dimensions();
+  }
 
   function updateControls() {
     byId('print-prepare').disabled = !selectionValid || !!job || saving;
@@ -4062,11 +4092,18 @@ var PrintPDF = (function() {
     byId('print-export-fields').querySelectorAll('input, select').forEach(function(el) { el.disabled = !!job || saving; });
   }
   function dimensions() {
-    var perInch = { cm: 2.54, mm: 25.4, in: 1 }[byId('print-unit').value];
-    var width = Number(byId('print-width').value) / perInch * 72;
-    var height = Number(byId('print-height').value) / perInch * 72;
-    var valid = Number.isFinite(width) && Number.isFinite(height) && width >= 0.01 && height >= 0.01 && width <= 14400 && height <= 14400;
-    byId('print-dimensions').textContent = valid ? width.toFixed(3) + ' × ' + height.toFixed(3) + ' Figma px\n(72 px = 1 inch)' : 'Enter positive dimensions, up to 200 inches per side.';
+    var unit = byId('print-unit').value;
+    var perInch = { cm: 2.54, mm: 25.4, in: 1 }[unit];
+    var trimWidth = Number(byId('print-width').value) / perInch * 72;
+    var trimHeight = Number(byId('print-height').value) / perInch * 72;
+    var bleedMm = Number(byId('print-bleed').value);
+    var bleed = bleedMm / 25.4 * 72;
+    var width = trimWidth + bleed * 2;
+    var height = trimHeight + bleed * 2;
+    var valid = [0, 2, 3, 4, 5, 6].includes(bleedMm) && Number.isFinite(width) && Number.isFinite(height) && trimWidth >= 0.01 && trimHeight >= 0.01 && width <= 14400 && height <= 14400;
+    byId('print-dimensions').textContent = valid ?
+      (bleedMm ? 'With bleed: ' + (width / 72 * perInch).toFixed(3) + ' × ' + (height / 72 * perInch).toFixed(3) + ' ' + unit + '\n' : '') +
+      width.toFixed(3) + ' × ' + height.toFixed(3) + ' Figma px\n(72 px = 1 inch)' : 'Enter positive dimensions, up to 200 inches per side including bleed.';
     byId('print-create').disabled = !valid;
     return valid;
   }
@@ -4090,12 +4127,17 @@ var PrintPDF = (function() {
     });
   });
   byId('card-print').addEventListener('click', function() { goTo('print'); send({ type: 'GET_PRINT_SELECTION' }); });
-  ['print-width', 'print-height', 'print-unit'].forEach(function(id) { byId(id).addEventListener('input', dimensions); });
+  byId('print-preset').addEventListener('change', applyPreset);
+  byId('print-unit').addEventListener('change', applyPreset);
+  byId('print-bleed').addEventListener('change', dimensions);
+  ['print-width', 'print-height'].forEach(function(id) {
+    byId(id).addEventListener('input', function() { byId('print-preset').value = 'custom'; dimensions(); });
+  });
   byId('print-create').addEventListener('click', function() {
     if (!dimensions()) return;
     byId('print-create').disabled = true;
     byId('print-frame-status').textContent = 'Creating frame…';
-    send({ type: 'PRINT_CREATE_FRAME', width: Number(byId('print-width').value), height: Number(byId('print-height').value), unit: byId('print-unit').value });
+    send({ type: 'PRINT_CREATE_FRAME', width: Number(byId('print-width').value), height: Number(byId('print-height').value), unit: byId('print-unit').value, bleedMm: Number(byId('print-bleed').value) });
   });
   byId('print-export-fields').addEventListener('input', function() {
     if (pdf) {
