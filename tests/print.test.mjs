@@ -35,7 +35,7 @@ function mockFigma(selection = []) {
   };
   const context = vm.createContext({ figma, __html__: '' });
   vm.runInContext(backend, context);
-  return { figma, messages, created, context, send: message => figma.ui.onmessage(message) };
+  return { figma, messages, created, listeners, context, send: message => figma.ui.onmessage(message) };
 }
 
 function frame(name = 'Print', width = 72, height = 144) {
@@ -96,7 +96,7 @@ test('invalid selection, request IDs, transforms and page sizes fail before expo
   for (const [nodes, options] of [[[], {}], [[{ ...frame(), type: 'RECTANGLE' }], {}],
     [[rotated], {}], [[frame('Huge', 14401, 72)], {}], [[frame('Invalid', NaN, 72)], {}],
     [[frame('Invalid', 72, Infinity)], {}], [Array.from({ length: 51 }, () => frame()), {}],
-    [[frame()], { requestId: NaN }], [[frame()], { requestId: -1 }],
+    [[frame()], { requestId: NaN }], [[frame()], { requestId: -1 }], [[frame()], { outlineText: 'true' }],
     [[frame('Tiny', 0.001, 72)], {}]]) {
     const m = mockFigma(nodes);
     await m.send({ type: 'PRINT_EXPORT_START', requestId: 1, ...options });
@@ -144,6 +144,215 @@ test('cancelled in-flight renders and stale requests cannot leak into the next e
   await m.send({ type: 'PRINT_EXPORT_NEXT', requestId: 1 });
   assert.equal(m.messages.filter(msg => msg.type === 'PRINT_EXPORT_PAGE').length, 0);
   assert.equal(m.messages.at(-1).requestId, 2);
+});
+
+function outlineFixture(m) {
+  const copies = [], flattened = [], detached = [], fonts = [];
+  function node(type, name, children = [], properties = {}) {
+    const item = { type, name, children, width: 72, height: 20, visible: true, removed: false,
+      relativeTransform: [[1, 0, 10], [0, 1, 20]], absoluteTransform: [[1, 0, 0], [0, 1, 0]],
+      resolvedVariableModes: {}, ...properties,
+      resizeWithoutConstraints(width, height) { this.width = width; this.height = height; },
+      remove() {
+        this.removed = true;
+        if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1);
+      },
+      getRangeAllFontNames() { return this.fonts || [{ family: 'Inter', style: 'Regular' }]; },
+      setExplicitVariableModeForCollection(collection, mode) { this.resolvedVariableModes[collection.id] = mode; },
+      clone() {
+        const copy = node(this.type, this.name, this.children.map(child => child.clone()), {
+          width: this.width, height: this.height, visible: this.visible,
+          relativeTransform: this.relativeTransform.map(row => [...row]),
+          characters: this.characters, hasMissingFont: this.hasMissingFont, fonts: this.fonts,
+          fills: this.fills, resolvedVariableModes: {},
+        });
+        if ('layoutMode' in this) copy.layoutMode = this.layoutMode;
+        if (this === source) copies.push(copy);
+        return copy;
+      },
+      detachInstance() {
+        assert.equal(this.type, 'INSTANCE');
+        assert.notEqual(this.parent?.type, 'INSTANCE', 'detach outer instances first');
+        detached.push(this.name);
+        const frame = node('FRAME', this.name, this.children, {
+          width: this.width, height: this.height, relativeTransform: this.relativeTransform,
+        });
+        frame.layoutMode = 'HORIZONTAL';
+        frame.parent = this.parent;
+        this.parent.children[this.parent.children.indexOf(this)] = frame;
+        this.removed = true;
+        return frame;
+      },
+      async exportAsync(settings) { this.settings = settings; return new Uint8Array([1, 2, 3]); },
+    };
+    children.forEach(child => { child.parent = item; });
+    if (type === 'FRAME' || type === 'INSTANCE') {
+      let layout = 'HORIZONTAL';
+      Object.defineProperty(item, 'layoutMode', { enumerable: true,
+        get() { return layout; },
+        set(value) {
+          layout = value;
+          if (value === 'NONE') children.forEach(child => {
+            // Simulate geometry changes when exiting auto-layout to check snapshot restoration.
+            child.width++;
+            child.relativeTransform = [[1, 0, 99], [0, 1, 99]];
+          });
+        },
+      });
+    }
+    return item;
+  }
+  const image = node('RECTANGLE', 'Photo', [], { fills: [{ type: 'IMAGE', imageHash: 'original-image', scaleMode: 'FILL' }] });
+  const nested = node('INSTANCE', 'Inner instance', [node('TEXT_PATH', 'Curved', [], { characters: 'Curve' })]);
+  const instance = node('INSTANCE', 'Outer instance', [node('TEXT', 'Instance text', [], { characters: 'Button' }), nested]);
+  const source = node('FRAME', 'Print', [
+    node('TEXT', 'Title', [], { characters: 'Hello', fonts: [
+      { family: 'Inter', style: 'Regular' }, { family: 'Inter', style: 'Bold' },
+    ] }), image, instance, node('TEXT', 'Empty', [], { characters: '' }),
+  ], { height: 144, resolvedVariableModes: { colors: 'dark' } });
+  m.figma.currentPage.selection = [source];
+  m.figma.loadFontAsync = async font => { fonts.push(font); };
+  m.figma.variables = { async getVariableCollectionByIdAsync(id) { return { id }; } };
+  m.figma.flatten = ([text], parent, index) => {
+    assert.ok(['TEXT', 'TEXT_PATH'].includes(text.type), 'only text is flattened');
+    for (let ancestor = parent; ancestor; ancestor = ancestor.parent) {
+      assert.notEqual(ancestor.type, 'INSTANCE');
+      if ('layoutMode' in ancestor) assert.equal(ancestor.layoutMode, 'NONE');
+    }
+    assert.equal(parent.children[index], text);
+    const vector = node('VECTOR', text.name, [], { width: text.width - 5, relativeTransform: text.relativeTransform });
+    flattened.push(text.name);
+    vector.parent = parent;
+    parent.children.splice(index, 1, vector);
+    text.removed = true;
+    return vector;
+  };
+  const snapshot = item => ({ type: item.type, name: item.name, width: item.width, height: item.height,
+    transform: item.relativeTransform, layout: item.layoutMode, characters: item.characters,
+    fills: item.fills, modes: item.resolvedVariableModes, children: item.children.map(snapshot) });
+  return { source, copies, flattened, detached, fonts, image, snapshot };
+}
+
+test('outline export converts nested/instance text only, freezes layout and preserves originals and image fills', async () => {
+  const m = mockFigma();
+  const fixture = outlineFixture(m);
+  const before = fixture.snapshot(fixture.source);
+  await m.send({ type: 'PRINT_EXPORT_START', requestId: 1, outlineText: true });
+  await m.send({ type: 'PRINT_EXPORT_NEXT', requestId: 1 });
+  assert.equal(m.messages.at(-1).type, 'PRINT_EXPORT_PAGE');
+  assert.deepEqual(fixture.flattened, ['Title', 'Instance text', 'Curved']);
+  assert.deepEqual(fixture.detached, ['Outer instance', 'Inner instance']);
+  assert.deepEqual(fixture.fonts.map(font => font.style).sort(), ['Bold', 'Regular']);
+  const copy = fixture.copies[0];
+  assert.equal(copy.settings.format, 'PDF');
+  assert.equal(copy.removed, true);
+  assert.equal(copy.children[1].fills, fixture.image.fills);
+  assert.equal(copy.children[1].width, fixture.image.width);
+  assert.deepEqual(copy.children[1].relativeTransform, fixture.image.relativeTransform);
+  assert.equal(copy.resolvedVariableModes.colors, 'dark');
+  assert.deepEqual(fixture.snapshot(fixture.source), before);
+  assert.equal(m.figma.currentPage.selection[0], fixture.source);
+});
+
+test('unchecked outline option uses the original native export without cloning or loading fonts', async () => {
+  const m = mockFigma();
+  const fixture = outlineFixture(m);
+  await m.send({ type: 'PRINT_EXPORT_START', requestId: 1, outlineText: false });
+  await m.send({ type: 'PRINT_EXPORT_NEXT', requestId: 1 });
+  assert.equal(fixture.copies.length, 0);
+  assert.equal(fixture.fonts.length, 0);
+  assert.equal(fixture.source.settings.format, 'PDF');
+});
+
+test('missing/unloadable fonts fail clearly without changing the source or silently keeping live text', async () => {
+  for (const missing of [true, false]) {
+    const m = mockFigma();
+    const fixture = outlineFixture(m);
+    fixture.source.children[0].hasMissingFont = missing;
+    if (!missing) m.figma.loadFontAsync = async () => { throw new Error('Font unavailable'); };
+    const before = fixture.snapshot(fixture.source);
+    await m.send({ type: 'PRINT_EXPORT_START', requestId: 1, outlineText: true });
+    await m.send({ type: 'PRINT_EXPORT_NEXT', requestId: 1 });
+    assert.equal(m.messages.at(-1).type, 'PRINT_ERROR');
+    assert.match(m.messages.at(-1).message, /font/i);
+    assert.equal(fixture.copies.length, 0);
+    assert.deepEqual(fixture.snapshot(fixture.source), before);
+  }
+});
+
+test('temporary outline copies are removed after conversion or PDF export errors', async () => {
+  for (const failure of ['flatten', 'export']) {
+    const m = mockFigma();
+    const fixture = outlineFixture(m);
+    if (failure === 'flatten') m.figma.flatten = () => { throw new Error('Outline failed'); };
+    else {
+      const clone = fixture.source.clone;
+      fixture.source.clone = function() {
+        const copy = clone.call(this);
+        copy.exportAsync = async () => { throw new Error('PDF failed'); };
+        return copy;
+      };
+    }
+    const before = fixture.snapshot(fixture.source);
+    await m.send({ type: 'PRINT_EXPORT_START', requestId: 1, outlineText: true });
+    await m.send({ type: 'PRINT_EXPORT_NEXT', requestId: 1 });
+    assert.equal(m.messages.at(-1).type, 'PRINT_ERROR');
+    assert.equal(fixture.copies[0].removed, true);
+    assert.deepEqual(fixture.snapshot(fixture.source), before);
+  }
+});
+
+test('cancellation and plugin close remove in-flight copies and discard stale outlined pages', async () => {
+  for (const action of ['cancel', 'close']) {
+    const m = mockFigma();
+    const fixture = outlineFixture(m);
+    let resolve, started;
+    const exporting = new Promise(done => { started = done; });
+    const clone = fixture.source.clone;
+    fixture.source.clone = function() {
+      const copy = clone.call(this);
+      copy.exportAsync = () => new Promise(done => { resolve = done; started(); });
+      return copy;
+    };
+    const before = fixture.snapshot(fixture.source);
+    await m.send({ type: 'PRINT_EXPORT_START', requestId: 1, outlineText: true });
+    const rendering = m.send({ type: 'PRINT_EXPORT_NEXT', requestId: 1 });
+    await exporting;
+    assert.equal(fixture.copies[0].removed, false);
+    if (action === 'cancel') await m.send({ type: 'PRINT_EXPORT_CANCEL', requestId: 1 });
+    else m.listeners.close();
+    assert.equal(fixture.copies[0].removed, true);
+    resolve(new Uint8Array([1]));
+    await rendering;
+    assert.equal(m.messages.filter(message => message.type === 'PRINT_EXPORT_PAGE').length, 0);
+    assert.deepEqual(fixture.snapshot(fixture.source), before);
+  }
+});
+
+test('cancelling while fonts load does not create a temporary copy', async () => {
+  const m = mockFigma();
+  const fixture = outlineFixture(m);
+  let resolve;
+  const loading = new Promise(done => { resolve = done; });
+  m.figma.loadFontAsync = () => loading;
+  await m.send({ type: 'PRINT_EXPORT_START', requestId: 1, outlineText: true });
+  const rendering = m.send({ type: 'PRINT_EXPORT_NEXT', requestId: 1 });
+  await m.send({ type: 'PRINT_EXPORT_CANCEL', requestId: 1 });
+  resolve();
+  await rendering;
+  assert.equal(fixture.copies.length, 0);
+  assert.equal(m.messages.filter(message => message.type === 'PRINT_EXPORT_PAGE').length, 0);
+});
+
+test('missing fonts in hidden content do not block the visible outlined PDF', async () => {
+  const m = mockFigma();
+  const fixture = outlineFixture(m);
+  fixture.source.children[0].visible = false;
+  fixture.source.children[0].hasMissingFont = true;
+  await m.send({ type: 'PRINT_EXPORT_START', requestId: 1, outlineText: true });
+  await m.send({ type: 'PRINT_EXPORT_NEXT', requestId: 1 });
+  assert.equal(m.messages.at(-1).type, 'PRINT_EXPORT_PAGE');
+  assert.ok(!fixture.flattened.includes('Title'));
 });
 
 async function vectorFixture(label, width = 198, height = 198) {
@@ -215,7 +424,7 @@ test('PDF writer rejects incomplete exports, invalid bytes, sizes and multi-page
 function printUI() {
   const context = pdfContext();
   const elements = new Map(Array.from(html.matchAll(/id="([^"]+)"/g), ([, id]) => [id, {
-    value: '', hidden: false, disabled: false, textContent: '', listeners: {},
+    value: '', checked: false, hidden: false, disabled: false, textContent: '', listeners: {},
     addEventListener(name, callback) { this.listeners[name] = callback; },
     setAttribute() {}, querySelectorAll() { return []; }, focus() {},
     emit(name) { return this.listeners[name]?.call(this); },
@@ -223,6 +432,8 @@ function printUI() {
   for (const [id, value] of [['print-width', '7'], ['print-height', '7'], ['print-unit', 'cm'],
     ['print-filename', 'vector.pdf']]) elements.get(id).value = value;
   const messages = [];
+  elements.get('print-export-fields').querySelectorAll = () =>
+    [elements.get('print-filename'), elements.get('print-outline-text')];
   let messageHandler;
   const result = { context, elements, messages, saved: null, downloaded: null, downloadClicks: 0 };
   context.document = {
@@ -264,7 +475,8 @@ function printUI() {
 test('print UI prepares native vector PDFs and saves/downloads the same PDF without a canvas', async () => {
   const ui = printUI();
   await ui.start();
-  assert.deepEqual(Object.keys(ui.messages[0]).sort(), ['requestId', 'type']);
+  assert.deepEqual(Object.keys(ui.messages[0]).sort(), ['outlineText', 'requestId', 'type']);
+  assert.equal(ui.messages[0].outlineText, false);
   assert.equal(ui.messages[0].type, 'PRINT_EXPORT_START');
   assert.equal(ui.messages.at(-1).type, 'PRINT_EXPORT_NEXT');
   await ui.receive({ type: 'PRINT_EXPORT_PAGE', requestId: 1, index: 0, name: 'Vector',
@@ -278,6 +490,24 @@ test('print UI prepares native vector PDFs and saves/downloads the same PDF with
   const saved = await PDFDocument.load(await ui.saved.arrayBuffer());
   assert.equal(saved.getPageCount(), 1);
   assert.match(pageContent(saved, saved.getPage(0)), /\bBT\b/);
+});
+
+test('outline checkbox is captured for the export, disabled while busy, and invalidates a prepared PDF', async () => {
+  const ui = printUI();
+  const checkbox = ui.elements.get('print-outline-text');
+  checkbox.checked = true;
+  await ui.start();
+  assert.equal(ui.messages[0].outlineText, true);
+  assert.equal(checkbox.disabled, true);
+  await ui.receive({ type: 'PRINT_EXPORT_PAGE', requestId: 1, index: 0, name: 'Outlined',
+    width: 72, height: 72, bytes: await vectorFixture('UI fixture') });
+  assert.match(ui.elements.get('print-export-status').textContent, /Text outlined/);
+  assert.equal(checkbox.disabled, false);
+  assert.equal(ui.elements.get('print-save').hidden, false);
+  checkbox.checked = false;
+  ui.elements.get('print-export-fields').emit('input');
+  assert.equal(ui.elements.get('print-save').hidden, true);
+  assert.match(ui.elements.get('print-export-status').textContent, /Prepare the PDF again/);
 });
 
 test('cancelling while the final PDF is saving bytes cannot publish stale output', async () => {

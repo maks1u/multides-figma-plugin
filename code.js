@@ -390,6 +390,82 @@ function validatePrintPage(node) {
   }
 }
 
+function printTextNodes(node, result = []) {
+  if (node.visible === false) return result;
+  if (node.type === 'TEXT' || node.type === 'TEXT_PATH') result.push(node);
+  if ('children' in node) node.children.forEach(child => printTextNodes(child, result));
+  return result;
+}
+
+function freezePrintLayout(node) {
+  if (node.visible === false) return;
+  if (node.type === 'INSTANCE') node = node.detachInstance();
+  const children = 'children' in node ? Array.from(node.children) : [];
+  if ('layoutMode' in node && node.layoutMode !== 'NONE') {
+    const { width, height } = node;
+    const positions = children.filter(child => child.visible !== false).map(child => ({
+      child, width: child.width, height: child.height, transform: child.relativeTransform,
+    }));
+    // Outlining shrinks text bounds; freeze auto-layout so neighboring artwork cannot shift.
+    node.layoutMode = 'NONE';
+    node.resizeWithoutConstraints(width, height);
+    positions.forEach(({ child, width, height, transform }) => {
+      if (child.width !== width || child.height !== height) child.resizeWithoutConstraints(width, height);
+      child.relativeTransform = transform;
+    });
+  }
+  children.forEach(freezePrintLayout);
+}
+
+async function exportPrintPage(page, job) {
+  const settings = { format: 'PDF', colorProfile: 'SRGB', contentsOnly: true, useAbsoluteBounds: true };
+  if (!job.outlineText) return page.node.exportAsync(settings);
+  const fonts = new Map();
+  printTextNodes(page.node).forEach(text => {
+    if (!text.characters.length) return;
+    if (text.hasMissingFont) throw new Error(`Text "${text.name}" uses missing fonts. Install or replace them before converting to outlines.`);
+    text.getRangeAllFontNames(0, text.characters.length).forEach(font => fonts.set(JSON.stringify(font), font));
+  });
+  await Promise.all(Array.from(fonts.values(), async font => {
+    try { await figma.loadFontAsync(font); }
+    catch (_) { throw new Error(`Could not load ${font.family} ${font.style || ''}. Install the font before converting text to outlines.`); }
+  }));
+  // A copy on the page must retain variable modes inherited from the original's ancestors.
+  const modes = await Promise.all(Object.entries(page.node.resolvedVariableModes).map(async ([id, mode]) => {
+    const collection = await figma.variables.getVariableCollectionByIdAsync(id);
+    if (!collection) throw new Error('A color or typography variable collection is unavailable.');
+    return { collection, mode };
+  }));
+  if (printExportJob !== job) return;
+  validatePrintPage(page.node);
+  if (page.node.width !== page.width || page.node.height !== page.height) {
+    throw new Error('A frame was resized during export. Prepare the PDF again.');
+  }
+  const copy = page.node.clone();
+  job.temporary = copy;
+  try {
+    modes.forEach(({ collection, mode }) => copy.setExplicitVariableModeForCollection(collection, mode));
+    freezePrintLayout(copy);
+    printTextNodes(copy).forEach(text => {
+      if (!text.characters.length) { text.remove(); return; }
+      const parent = text.parent;
+      figma.flatten([text], parent, parent.children.indexOf(text));
+    });
+    return await copy.exportAsync(settings);
+  } finally {
+    if (!copy.removed) copy.remove();
+    if (job.temporary === copy) job.temporary = null;
+  }
+}
+
+function cancelPrintExport() {
+  const job = printExportJob;
+  printExportJob = null;
+  if (job && job.temporary && !job.temporary.removed) job.temporary.remove();
+}
+
+figma.on('close', cancelPrintExport);
+
 async function handlePrintMessage(msg) {
   try {
     if (msg.type === 'GET_PRINT_SELECTION') {
@@ -409,14 +485,15 @@ async function handlePrintMessage(msg) {
       sendPrintSelection();
     } else if (msg.type === 'PRINT_EXPORT_START') {
       if (printExportJob) throw new Error('A PDF export is already in progress.');
-      if (!Number.isSafeInteger(msg.requestId) || msg.requestId < 1) throw new Error('Invalid PDF export settings.');
+      if (!Number.isSafeInteger(msg.requestId) || msg.requestId < 1 ||
+          (msg.outlineText !== undefined && typeof msg.outlineText !== 'boolean')) throw new Error('Invalid PDF export settings.');
       const nodes = Array.from(figma.currentPage.selection);
       if (!nodes.length || nodes.length > 50) throw new Error('Select between 1 and 50 frames.');
       const pages = nodes.map(node => {
         validatePrintPage(node);
         return { node, width: node.width, height: node.height, name: node.name };
       });
-      printExportJob = { requestId: msg.requestId, pages, index: 0, busy: false };
+      printExportJob = { requestId: msg.requestId, outlineText: msg.outlineText === true, pages, index: 0, busy: false };
       figma.ui.postMessage({ type: 'PRINT_EXPORT_READY', requestId: msg.requestId, count: pages.length });
     } else if (msg.type === 'PRINT_EXPORT_NEXT') {
       const job = printExportJob;
@@ -427,9 +504,7 @@ async function handlePrintMessage(msg) {
       if (page.node.width !== page.width || page.node.height !== page.height) {
         throw new Error('A frame was resized during export. Prepare the PDF again.');
       }
-      const bytes = await page.node.exportAsync({
-        format: 'PDF', colorProfile: 'SRGB', contentsOnly: true, useAbsoluteBounds: true,
-      });
+      const bytes = await exportPrintPage(page, job);
       if (printExportJob !== job) return;
       figma.ui.postMessage({
         type: 'PRINT_EXPORT_PAGE', requestId: job.requestId, index: job.index,
@@ -439,10 +514,10 @@ async function handlePrintMessage(msg) {
       job.busy = false;
       if (job.index === job.pages.length) printExportJob = null;
     } else if (msg.type === 'PRINT_EXPORT_CANCEL') {
-      if (printExportJob && printExportJob.requestId === msg.requestId) printExportJob = null;
+      if (printExportJob && printExportJob.requestId === msg.requestId) cancelPrintExport();
     }
   } catch (err) {
-    if (printExportJob && printExportJob.requestId === msg.requestId) printExportJob = null;
+    if (printExportJob && printExportJob.requestId === msg.requestId) cancelPrintExport();
     figma.ui.postMessage({ type: 'PRINT_ERROR', requestId: msg.requestId, action: msg.type, message: err.message });
   }
 }

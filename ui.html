@@ -1538,6 +1538,8 @@
       background: var(--s1); color: var(--fg); border: 1px solid var(--border); font: 11px var(--mono);
     }
     .print-field input:focus, .print-field select:focus { outline: 1px solid var(--fg); }
+    .print-checkbox { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 11px; cursor: pointer; }
+    .print-checkbox input { accent-color: var(--fg); }
     .print-note { color: #999; font-size: 11px; line-height: 1.6; margin: 12px 0; }
     .print-summary { padding: 12px; background: var(--s1); border: 1px solid var(--border); font: 11px/1.7 var(--mono); }
     .print-status { min-height: 36px; margin: 12px 0; font: 11px/1.6 var(--mono); overflow-wrap: anywhere; }
@@ -2041,7 +2043,9 @@
         <div class="print-summary print-selection" id="print-selection" aria-live="polite">Select one or more frames.</div>
         <div class="print-fields" id="print-export-fields">
           <label class="print-field" style="grid-column: 1 / -1;">File name<input id="print-filename" value="multides-print.pdf" maxlength="120"></label>
+          <label class="print-checkbox"><input id="print-outline-text" type="checkbox" aria-describedby="print-outline-note">Convert text to outlines</label>
         </div>
+        <p class="print-note" id="print-outline-note">Convert text to vector paths in the PDF, with no font dependency. Images stay as images and original frames stay editable. Outlined text cannot be selected or edited as text.</p>
         <p class="print-note">Vector PDF · sRGB. Shapes and text retain Figma’s native PDF quality without converting whole pages to images. Photos and effects rasterized by Figma remain raster.</p>
         <p class="print-note">For CMYK printing, convert the PDF with your printer’s ICC profile in a prepress tool.</p>
         <div class="print-actions">
@@ -4114,10 +4118,10 @@ var PrintPDF = (function() {
   byId('print-prepare').addEventListener('click', function() {
     if (job || saving || !selectionValid) return;
     pdf = null;
-    job = { id: ++requestId, name: filename(), count: 0, index: 0, writer: null };
+    job = { id: ++requestId, name: filename(), outlineText: byId('print-outline-text').checked, count: 0, index: 0, writer: null };
     updateControls();
     status('Preparing selected frames…');
-    send({ type: 'PRINT_EXPORT_START', requestId: job.id });
+    send({ type: 'PRINT_EXPORT_START', requestId: job.id, outlineText: job.outlineText });
   });
   byId('print-cancel').addEventListener('click', function() {
     if (job) send({ type: 'PRINT_EXPORT_CANCEL', requestId: job.id });
@@ -4162,7 +4166,7 @@ var PrintPDF = (function() {
             pdf = result;
             pdfName = active.name;
             job = null;
-            status(active.count + ' page(s) ready · Vector PDF (sRGB) · ' + (pdf.size / 1048576).toFixed(2) + ' MB. Save PDF to choose a destination.');
+            status(active.count + ' page(s) ready · Vector PDF (sRGB)' + (active.outlineText ? ' · Text outlined' : '') + ' · ' + (pdf.size / 1048576).toFixed(2) + ' MB. Save PDF to choose a destination.');
             updateControls();
           } else {
             status('Rendering page ' + (active.index + 1) + ' of ' + active.count + '…');
